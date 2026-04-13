@@ -6,6 +6,9 @@ from config import settings
 from utils.features.holidays import add_holiday_features
 from utils.features.worldbank import add_worldbank_features
 from utils.features.religion import add_religion_features
+from utils.features.risk_merge import RiskIndicatorMerger
+from utils.features.hol_rel import add_holiday_religion_features, get_new_feature_names
+from utils.features.WBD_features import add_worldbank_engineered_features
 
 
 def prepare_data_pipeline(clean_data: bool = False):
@@ -51,16 +54,37 @@ def prepare_data_pipeline(clean_data: bool = False):
     combined = data_cleaning.add_lagged_columns(combined)
     combined = data_cleaning.add_time_trend_features(combined)
     combined = data_cleaning.add_importance_weights(combined)
+
     combined = add_worldbank_features(combined, gdf)
+    wb_cols = [c for c in ['inflation', 'youth_unemployment', 'income_inequality', 'income_level_code'] if c in combined.columns]
+    lagged_wb = combined[wb_cols].groupby(level='matched_admin1_id').shift(1)
+    lagged_wb.columns = [f"{c} (t-1)" for c in lagged_wb.columns]
+    combined = combined.drop(columns=wb_cols)
+    combined = pd.concat([combined, lagged_wb], axis=1)
+
     combined = add_holiday_features(combined, gdf)
+    holiday_cols = [c for c in combined.columns if 'holiday_count' in c]
+    lagged_hol = combined[holiday_cols].groupby(level='matched_admin1_id').shift(1)
+    lagged_hol.columns = [f"{c} (t-1)" for c in lagged_hol.columns]
+    combined = pd.concat([combined, lagged_hol], axis=1)
+    
     combined = add_religion_features(combined)
+    combined = add_holiday_religion_features(combined)
+    combined = add_worldbank_engineered_features(combined)
+
     
 
 
-    model_data = combined[settings.predictors + settings.targets]
+    model_data = combined[settings.predictors + settings.targets + ['importance_weight']]
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     model_data.to_csv(output_path)
+
+        # Risk merger reads from saved file, enriches it, saves again
+    merger = RiskIndicatorMerger()
+    model_data = merger.merge(output_path, "data/raw/master_raw.csv")
+    model_data.to_csv(output_path, index=False)
+
 
     return model_data
     
